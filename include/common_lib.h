@@ -13,6 +13,8 @@ which is included as part of this source code package.
 #ifndef COMMON_LIB_H
 #define COMMON_LIB_H
 
+#include "ablation_config.h"
+
 #include <utils/so3_math.h>
 #include <utils/types.h>
 #include <utils/color.h>
@@ -139,7 +141,12 @@ struct StatesGroup
     this->inv_expo_time = 1.0;
     this->cov = MD(DIM_STATE, DIM_STATE)::Identity() * INIT_COV;
     this->cov(6, 6) = 0.00001;
+#ifdef ENABLE_ACC6
+    this->cov.block<6, 6>(10, 10) = MD(6, 6)::Identity() * 0.01;
+    this->cov.block<3, 3>(16, 16) = MD(3, 3)::Identity() * 0.001;
+#else
     this->cov.block<9, 9>(10, 10) = MD(9, 9)::Identity() * 0.00001;
+#endif
   };
 
   StatesGroup(const StatesGroup &b)

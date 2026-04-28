@@ -58,6 +58,9 @@ public:
   V3D cov_bias_gyr;
   V3D cov_bias_acc;
   double cov_inv_expo;
+#ifdef ENABLE_ACC7
+  double gravity_const = G_m_s2;
+#endif
   double first_lidar_time;
   bool imu_time_init = false;
   bool imu_need_init = true;

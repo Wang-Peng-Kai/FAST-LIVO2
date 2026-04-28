@@ -11,6 +11,7 @@ which is included as part of this source code package.
 */
 
 #include "IMU_Processing.h"
+#include "ablation_config.h"
 #include <rcpputils/asserts.hpp>
 
 const bool time_list(PointType &x, PointType &y) { return (x.curvature < y.curvature); }
@@ -144,7 +145,11 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, StatesGroup &state_inout, in
     N++;
   }
   IMU_mean_acc_norm = mean_acc.norm();
+#ifdef ENABLE_ACC7
+  state_inout.gravity = -mean_acc / mean_acc.norm() * gravity_const;
+#else
   state_inout.gravity = -mean_acc / mean_acc.norm() * G_m_s2;
+#endif
   state_inout.rot_end = Eye3d; // Exp(mean_acc.cross(V3D(0, 0, -1 / scale_gravity)));
   state_inout.bias_g = Zero3d; // mean_gyr;
 
@@ -352,7 +357,11 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
       // imu_time = stamp2Sec(head->header.stamp) - first_lidar_time;
 
       angvel_avr -= state_inout.bias_g;
+#ifdef ENABLE_ACC7
+      acc_avr = acc_avr * gravity_const / mean_acc.norm() - state_inout.bias_a;
+#else
       acc_avr = acc_avr * G_m_s2 / mean_acc.norm() - state_inout.bias_a;
+#endif
 
       if (stamp2Sec(head->header.stamp) < prop_beg_time)
       {
@@ -374,7 +383,10 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
       }
 
       dt_all += dt;
-      // printf("[ LIO Propagation ] dt: %lf \n", dt);
+#ifdef ENABLE_ROB5
+      if (dt <= 0) continue;
+      if (dt > 0.05) dt = 0.05;
+#endif
 
       /* covariance propagation */
       M3D acc_avr_skew;
@@ -538,6 +550,9 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
     pcl_out = pcl_wait_proc;
     pcl_wait_proc.clear();
     IMUpose.clear();
+#ifdef ENABLE_OPT5
+    IMUpose.reserve(50);
+#endif
   }
   // printf("[ IMU ] time forward: %lf, backward: %lf.\n", t1 - t0, omp_get_wtime() - t1);
 }

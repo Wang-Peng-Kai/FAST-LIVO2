@@ -11,17 +11,26 @@ which is included as part of this source code package.
 */
 
 #include "preprocess.h"
+#include "ablation_config.h"
 
 #define RETURN0 0x00
 #define RETURN0AND1 0x10
 
+#ifdef ENABLE_BUG1
+Preprocess::Preprocess() : feature_enabled(0), lidar_type(AVIA), blind(0.01), blind_sqr(0.0001), point_filter_num(1)
+#else
 Preprocess::Preprocess() : feature_enabled(0), lidar_type(AVIA), blind(0.01), point_filter_num(1)
+#endif
 {
   inf_bound = 10;
   N_SCANS = 6;
   group_size = 8;
   disA = 0.01;
-  disA = 0.1; // B?
+#ifdef ENABLE_BUG2
+  disB = 0.1;
+#else
+  disA = 0.1;
+#endif
   p2l_ratio = 225;
   limit_maxmid = 6.25;
   limit_midmin = 6.25;
@@ -48,6 +57,9 @@ void Preprocess::set(bool feat_en, int lid_type, double bld, int pfilt_num)
   feature_enabled = feat_en;
   lidar_type = lid_type;
   blind = bld;
+#ifdef ENABLE_BUG1
+  blind_sqr = blind * blind;
+#endif
   point_filter_num = pfilt_num;
 }
 

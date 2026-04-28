@@ -11,6 +11,7 @@ which is included as part of this source code package.
 */
 
 #include "voxel_map.h"
+#include "ablation_config.h"
 using namespace Eigen;
 void calcBodyCov(Eigen::Vector3d &pb, const float range_inc, const float degree_inc, Eigen::Matrix3d &cov)
 {
@@ -23,7 +24,23 @@ void calcBodyCov(Eigen::Vector3d &pb, const float range_inc, const float degree_
   direction.normalize();
   Eigen::Matrix3d direction_hat;
   direction_hat << 0, -direction(2), direction(1), direction(2), 0, -direction(0), -direction(1), direction(0), 0;
+#ifdef ENABLE_ACC3
+  Eigen::Vector3d base_vector1;
+  if (fabs(direction(2)) > 0.1)
+  {
+    base_vector1 = Eigen::Vector3d(1, 1, -(direction(0) + direction(1)) / direction(2));
+  }
+  else if (fabs(direction(1)) > 0.1)
+  {
+    base_vector1 = Eigen::Vector3d(1, -(direction(0) + direction(2)) / direction(1), 1);
+  }
+  else
+  {
+    base_vector1 = Eigen::Vector3d(-(direction(1) + direction(2)) / direction(0), 1, 1);
+  }
+#else
   Eigen::Vector3d base_vector1(1, 1, -(direction(0) + direction(1)) / direction(2));
+#endif
   base_vector1.normalize();
   Eigen::Vector3d base_vector2 = base_vector1.cross(direction);
   base_vector2.normalize();
@@ -83,18 +100,25 @@ void VoxelOctoTree::init_plane(const std::vector<pointWithVar> &points, VoxelPla
   }
   plane->center_ = plane->center_ / plane->points_size_;
   plane->covariance_ = plane->covariance_ / plane->points_size_ - plane->center_ * plane->center_.transpose();
+#ifdef ENABLE_OPT3
+  Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(plane->covariance_);
+  Eigen::Vector3d evalsReal = es.eigenvalues();
+  Eigen::Matrix3d evecs_real = es.eigenvectors();
+#else
   Eigen::EigenSolver<Eigen::Matrix3d> es(plane->covariance_);
   Eigen::Matrix3cd evecs = es.eigenvectors();
   Eigen::Vector3cd evals = es.eigenvalues();
   Eigen::Vector3d evalsReal;
   evalsReal = evals.real();
+  Eigen::Matrix3d evecs_real = evecs.real();
+#endif
   Eigen::Matrix3f::Index evalsMin, evalsMax;
   evalsReal.rowwise().sum().minCoeff(&evalsMin);
   evalsReal.rowwise().sum().maxCoeff(&evalsMax);
   int evalsMid = 3 - evalsMin - evalsMax;
-  Eigen::Vector3d evecMin = evecs.real().col(evalsMin);
-  Eigen::Vector3d evecMid = evecs.real().col(evalsMid);
-  Eigen::Vector3d evecMax = evecs.real().col(evalsMax);
+  Eigen::Vector3d evecMin = evecs_real.col(evalsMin);
+  Eigen::Vector3d evecMid = evecs_real.col(evalsMid);
+  Eigen::Vector3d evecMax = evecs_real.col(evalsMax);
   Eigen::Matrix3d J_Q;
   J_Q << 1.0 / plane->points_size_, 0, 0, 0, 1.0 / plane->points_size_, 0, 0, 0, 1.0 / plane->points_size_;
   // && evalsReal(evalsMid) > 0.05
@@ -111,7 +135,7 @@ void VoxelOctoTree::init_plane(const std::vector<pointWithVar> &points, VoxelPla
         {
           Eigen::Matrix<double, 1, 3> F_m =
               (points[i].point_w - plane->center_).transpose() / ((plane->points_size_) * (evalsReal[evalsMin] - evalsReal[m])) *
-              (evecs.real().col(m) * evecs.real().col(evalsMin).transpose() + evecs.real().col(evalsMin) * evecs.real().col(m).transpose());
+              (evecs_real.col(m) * evecs_real.col(evalsMin).transpose() + evecs_real.col(evalsMin) * evecs_real.col(m).transpose());
           F.row(m) = F_m;
         }
         else
@@ -121,14 +145,14 @@ void VoxelOctoTree::init_plane(const std::vector<pointWithVar> &points, VoxelPla
           F.row(m) = F_m;
         }
       }
-      J.block<3, 3>(0, 0) = evecs.real() * F;
+      J.block<3, 3>(0, 0) = evecs_real * F;
       J.block<3, 3>(3, 0) = J_Q;
       plane->plane_var_ += J * points[i].var * J.transpose();
     }
 
-    plane->normal_ << evecs.real()(0, evalsMin), evecs.real()(1, evalsMin), evecs.real()(2, evalsMin);
-    plane->y_normal_ << evecs.real()(0, evalsMid), evecs.real()(1, evalsMid), evecs.real()(2, evalsMid);
-    plane->x_normal_ << evecs.real()(0, evalsMax), evecs.real()(1, evalsMax), evecs.real()(2, evalsMax);
+    plane->normal_ << evecs_real(0, evalsMin), evecs_real(1, evalsMin), evecs_real(2, evalsMin);
+    plane->y_normal_ << evecs_real(0, evalsMid), evecs_real(1, evalsMid), evecs_real(2, evalsMid);
+    plane->x_normal_ << evecs_real(0, evalsMax), evecs_real(1, evalsMax), evecs_real(2, evalsMax);
     plane->min_eigen_value_ = evalsReal(evalsMin);
     plane->mid_eigen_value_ = evalsReal(evalsMid);
     plane->max_eigen_value_ = evalsReal(evalsMax);
@@ -427,6 +451,10 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
     VectorXd R_inv(effct_feat_num_);
     VectorXd meas_vec(effct_feat_num_);
     meas_vec.setZero();
+#ifdef ENABLE_EFF3
+    const M3D prop_rot_ext = state_propagat.rot_end * extR_;
+    const M3D state_rot_T = state_.rot_end.transpose();
+#endif
     for (int i = 0; i < effct_feat_num_; i++)
     {
       auto &ptpl = ptpl_list_[i];
@@ -458,15 +486,28 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
       //       state_propagat.cov.block<3, 3>(3, 3) - point_crossmat * state_propagat.cov.block<3, 3>(0, 0) * point_crossmat;
 
       // point_body cov
+#ifdef ENABLE_EFF3
+      var = prop_rot_ext * ptpl_list_[i].body_cov_ * prop_rot_ext.transpose();
+#else
       var = state_propagat.rot_end * extR_ * ptpl_list_[i].body_cov_ * (state_propagat.rot_end * extR_).transpose();
+#endif
 
       double sigma_l = J_nq * ptpl_list_[i].plane_var_ * J_nq.transpose();
 
+#ifdef ENABLE_ACC5
+      double reg = std::max(0.001, 0.01 * sigma_l);
+      R_inv(i) = 1.0 / (reg + sigma_l + ptpl_list_[i].normal_.transpose() * var * ptpl_list_[i].normal_);
+#else
       R_inv(i) = 1.0 / (0.001 + sigma_l + ptpl_list_[i].normal_.transpose() * var * ptpl_list_[i].normal_);
+#endif
       // R_inv(i) = 1.0 / (sigma_l + ptpl_list_[i].normal_.transpose() * var * ptpl_list_[i].normal_);
 
       /*** calculate the Measuremnt Jacobian matrix H ***/
+#ifdef ENABLE_EFF3
+      V3D A(point_crossmat * state_rot_T * ptpl_list_[i].normal_);
+#else
       V3D A(point_crossmat * state_.rot_end.transpose() * ptpl_list_[i].normal_);
+#endif
       Hsub.row(i) << VEC_FROM_ARRAY(A), ptpl_list_[i].normal_[0], ptpl_list_[i].normal_[1], ptpl_list_[i].normal_[2];
       Hsub_T_R_inv.col(i) << A[0] * R_inv(i), A[1] * R_inv(i), A[2] * R_inv(i), ptpl_list_[i].normal_[0] * R_inv(i),
           ptpl_list_[i].normal_[1] * R_inv(i), ptpl_list_[i].normal_[2] * R_inv(i);
@@ -480,6 +521,23 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
     auto &&HTz = Hsub_T_R_inv * meas_vec;
     // fout_dbg<<"HTz: "<<HTz<<endl;
     H_T_H.block<6, 6>(0, 0) = Hsub_T_R_inv * Hsub;
+
+#ifdef ENABLE_ROB3
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double, 6, 6>> hth_es(H_T_H.block<6, 6>(0, 0));
+    double max_ev = hth_es.eigenvalues().maxCoeff();
+    double min_ev = hth_es.eigenvalues().minCoeff();
+    if (min_ev < 1e-12 || max_ev / (min_ev + 1e-15) > 1e6)
+    {
+      double reg_val = max_ev * 1e-6;
+      Eigen::Matrix<double, 6, 6> V = hth_es.eigenvectors();
+      Eigen::Matrix<double, 6, 1> D = hth_es.eigenvalues();
+      for (int d = 0; d < 6; d++)
+      {
+        if (D(d) < reg_val) D(d) = reg_val;
+      }
+      H_T_H.block<6, 6>(0, 0) = V * D.asDiagonal() * V.transpose();
+    }
+#endif
     // EigenSolver<Matrix<double, 6, 6>> es(H_T_H.block<6,6>(0,0));
     MD(DIM_STATE, DIM_STATE) &&K_1 = (H_T_H.block<DIM_STATE, DIM_STATE>(0, 0) + state_.cov.block<DIM_STATE, DIM_STATE>(0, 0).inverse()).inverse();
     G.block<DIM_STATE, 6>(0, 0) = K_1.block<DIM_STATE, 6>(0, 0) * H_T_H.block<6, 6>(0, 0);
@@ -488,6 +546,9 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
     solution = K_1.block<DIM_STATE, 6>(0, 0) * HTz + vec.block<DIM_STATE, 1>(0, 0) - G.block<DIM_STATE, 6>(0, 0) * vec.block<6, 1>(0, 0);
     int minRow, minCol;
     state_ += solution;
+#ifdef ENABLE_ACC2
+    state_.rot_end = Eigen::Quaterniond(state_.rot_end).normalized().toRotationMatrix();
+#endif
     auto rot_add = solution.block<3, 1>(0, 0);
     auto t_add = solution.block<3, 1>(3, 0);
     if ((rot_add.norm() * 57.3 < 0.01) && (t_add.norm() * 100 < 0.015)) { flg_EKF_converged = true; }
@@ -531,11 +592,19 @@ void VoxelMapManager::TransformLidar(const Eigen::Matrix3d rot, const Eigen::Vec
 {
   pcl::PointCloud<pcl::PointXYZI>().swap(*trans_cloud);
   trans_cloud->reserve(input_cloud->size());
+#ifdef ENABLE_EFF3
+  const M3D combined_R = rot * extR_;
+  const V3D combined_t = rot * extT_ + t;
+#endif
   for (size_t i = 0; i < input_cloud->size(); i++)
   {
     pcl::PointXYZINormal p_c = input_cloud->points[i];
     Eigen::Vector3d p(p_c.x, p_c.y, p_c.z);
+#ifdef ENABLE_EFF3
+    p = combined_R * p + combined_t;
+#else
     p = (rot * (extR_ * p + extT_) + t);
+#endif
     pcl::PointXYZI pi;
     pi.x = p(0);
     pi.y = p(1);
@@ -554,6 +623,11 @@ void VoxelMapManager::BuildVoxelMap()
   std::vector<int> layer_init_num = convertToIntVectorSafe(config_setting_.layer_init_num_);
 
   std::vector<pointWithVar> input_points;
+#ifdef ENABLE_EFF3
+  const M3D rot_ext = state_.rot_end * extR_;
+  const M3D rot_var = state_.cov.block<3, 3>(0, 0);
+  const M3D t_var = state_.cov.block<3, 3>(3, 3);
+#endif
 
   for (size_t i = 0; i < feats_down_world_->size(); i++)
   {
@@ -564,8 +638,13 @@ void VoxelMapManager::BuildVoxelMap()
     calcBodyCov(point_this, config_setting_.dept_err_, config_setting_.beam_err_, var);
     M3D point_crossmat;
     point_crossmat << SKEW_SYM_MATRX(point_this);
+#ifdef ENABLE_EFF3
+    var = rot_ext * var * rot_ext.transpose() +
+          (-point_crossmat) * rot_var * (-point_crossmat).transpose() + t_var;
+#else
     var = (state_.rot_end * extR_) * var * (state_.rot_end * extR_).transpose() +
           (-point_crossmat) * state_.cov.block<3, 3>(0, 0) * (-point_crossmat).transpose() + state_.cov.block<3, 3>(3, 3);
+#endif
     pv.var = var;
     input_points.push_back(pv);
   }
@@ -661,7 +740,9 @@ void VoxelMapManager::BuildResidualListOMP(std::vector<pointWithVar> &pv_list, s
   int max_layer = config_setting_.max_layer_;
   double voxel_size = config_setting_.max_voxel_size_;
   double sigma_num = config_setting_.sigma_num_;
+#ifndef ENABLE_EFF1
   std::mutex mylock;
+#endif
   ptpl_list.clear();
   std::vector<PointToPlane> all_ptpl_list(pv_list.size());
   std::vector<bool> useful_ptpl(pv_list.size());
@@ -707,16 +788,15 @@ void VoxelMapManager::BuildResidualListOMP(std::vector<pointWithVar> &pv_list, s
       }
       if (is_sucess)
       {
+#ifdef ENABLE_EFF1
+        useful_ptpl[i] = true;
+        all_ptpl_list[i] = single_ptpl;
+#else
         mylock.lock();
         useful_ptpl[i] = true;
         all_ptpl_list[i] = single_ptpl;
         mylock.unlock();
-      }
-      else
-      {
-        mylock.lock();
-        useful_ptpl[i] = false;
-        mylock.unlock();
+#endif
       }
     }
   }
